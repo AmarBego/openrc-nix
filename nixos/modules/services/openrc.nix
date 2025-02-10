@@ -63,37 +63,35 @@ in {
     };
   };
 
-  config = lib.mkIf config.services.openrc.enable {
-    environment.etc = {
-      "openrc/init.d".source = "${openrcServices}/etc/openrc/init.d";
-      "openrc/conf.d".source = "${openrcServices}/etc/openrc/conf.d";
-      "openrc/rc.conf".text = ''
-        rc_sys=""
-        rc_controller_cgroups=""
-        rc_depend_strict="YES"
-        rc_confd="/etc/openrc/conf.d"
-        rc_initd="/etc/openrc/init.d"
-      '';
-    };
-
-    system.activationScripts.openrc = lib.stringAfter [ "etc" ] ''
-      mkdir -p /run/openrc/{softlevel,started}
-      chmod 0755 /run/openrc /run/openrc/*
-
-      # Link store paths to expected locations
-      ln -sfn ${openrcServices}/etc/openrc/init.d /etc/init.d
-      ln -sfn ${openrcServices}/etc/openrc/conf.d /etc/conf.d
-
-      # Initialize service links
-      ${pkgs.openrc}/bin/rc-update -u
+ config = lib.mkIf config.services.openrc.enable {
+  environment.etc = {
+    "openrc/init.d".source = "${openrcServices}/etc/openrc/init.d";
+    "openrc/conf.d".source = "${openrcServices}/etc/openrc/conf.d";
+    "openrc/rc.conf".text = ''
+      rc_sys=""
+      rc_controller_cgroups=""
+      rc_depend_strict="YES"
+      rc_confd="/etc/openrc/conf.d"
+      rc_initd="/etc/openrc/init.d"
     '';
+  };
+
+  system.activationScripts.openrc = lib.stringAfter [ "etc" ] ''
+    mkdir -p /run/openrc/{softlevel,started}
+    chmod 0755 /run/openrc /run/openrc/*
+
+    # Link store paths to expected locations
+    ln -sfn ${openrcServices}/etc/openrc/init.d /etc/init.d
+    ln -sfn ${openrcServices}/etc/openrc/conf.d /etc/conf.d
+
+    # Initialize service links
+    ${pkgs.openrc}/bin/rc-update -u
+  '';
 
     environment.systemPackages = [ pkgs.openrc ];
 
+    # Configure boot to use OpenRC in stage 2
     boot.initrd.systemd.enable = false;
-    boot.initrd.openrc = {
-      enable = true;
-      package = pkgs.openrc;
-    };
-  };
+    boot.initrd.openrc.enable = true;
+  }
 }

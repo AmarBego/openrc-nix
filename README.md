@@ -1,4 +1,3 @@
-
 # NixOS OpenRC Experimental Fork
 
 ## Objective
@@ -6,6 +5,19 @@ Implement OpenRC as alternative init system while maintaining NixOS principles. 
 - Adapt OpenRC to read-only Nix store
 - Replace systemd's service management
 - Handle Nix-specific path requirements
+
+## Current Progress
+- [x] OpenRC package builds successfully with NixOS paths
+- [x] Stage-1 boot completes successfully
+- [x] Transition to Stage-2 works
+- [x] Runtime directories created correctly
+- [x] OpenRC libraries copied to /lib
+- [x] Library cache updated in writable location
+- [x] Runtime configuration installed
+- [ ] OpenRC init starts successfully (blocked by library loading)
+- [ ] Service management working
+- [ ] System shutdown/reboot handling
+- [ ] Complete systemd replacement
 
 ## Technical Approach
 
@@ -55,39 +67,31 @@ openrcServices = pkgs.runCommand "openrc-services" {
 ln -sfn ${openrcServices}/etc/openrc/init.d /etc/init.d
 ```
 
-### 3. Initramfs Integration
-*(nixos/modules/system/boot/openrc-init.nix)*
-
-**Initrd Setup:**
-- Copies OpenRC binaries and libraries to initrd:
-```nix
-copy_bin_and_libs ${config.boot.initrd.openrc.package}/bin/openrc-init
-```
-- Creates minimal runtime environment:
-```bash
-mkdir -p /run/openrc/{init.d,conf.d,runlevels,started}
-```
-
-**Current Stage 1 Failure:**
-Library resolution fails despite:
-```nix
-# Explicit library copying in extraUtilsCommands
-for libfile in ${openrcPkg}/lib/libeinfo.so*; do
-  copy_bin_and_libs "$libfile"
-done
-```
-Error manifests as:
-```
-openrc-init: error while loading shared libraries: libeinfo.so.1: cannot open shared object file
-```
-
-### 4. Stage 2 Initialization
+### 3. Stage 2 Initialization
 *(nixos/modules/system/boot/stage-2.nix)*
 
+**Library Setup:**
+```nix
+openrcLibSetup = pkgs.writeScript "openrc-lib-setup" ''
+  mkdir -p /lib /run/ldconfig
+
+  # Copy OpenRC libraries
+  cp -av ${openrcPkg}/lib/lib{einfo,rc}.so* /lib/
+
+  # Update library cache with writable temp directory
+  TMPDIR=/run/ldconfig ldconfig -C /run/ldconfig/ld.so.cache /lib
+  cp -av /run/ldconfig/ld.so.cache /etc/ld.so.cache
+'';
+```
+
 **Environment Preparation:**
-- Sets up OpenRC-specific paths:
 ```nix
 runtimeConfig = pkgs.writeText "openrc-runtime-config" ''
+  rc_sys=""
+  rc_controller_cgroups="NO"
+  rc_depend_strict="YES"
+  rc_logger="YES"
+  rc_shell=/bin/sh
   rc_basedir="/run/openrc"
   rc_runleveldir="/run/openrc/runlevels"
 '';
@@ -96,22 +100,21 @@ runtimeConfig = pkgs.writeText "openrc-runtime-config" ''
 **Init Switching:**
 ```bash
 if [ "@USE_OPENRC@" = "1" ]; then
-  exec "@openrcPackage@/sbin/openrc-init"
+  exec "@openrcPackage@/bin/openrc-init"
 fi
 ```
 
 ## Known Issues
 
-### 1. Stage 1 Library Resolution
-Despite explicit copying in `extraUtilsCommands`, initrd fails to find libeinfo.so.1. Debugging steps:
-
-- Verified library exists in initrd's /lib
-- Checked ELF dependencies:
-```bash
-ldd /nix/store/...-extra-utils/bin/openrc-init
-    libeinfo.so.1 => not found
+### 1. Library Resolution
+Boot process now reaches stage-2 but fails when executing openrc-init:
 ```
-- Suspected issue: initrd's ld cache not updated
+openrc-init: error while loading shared libraries: libeinfo.so.1: cannot open shared object file: No such file or directory
+```
+Current debugging steps:
+- Libraries are copied to /lib
+- ldconfig cache is updated in writable location
+- LD_LIBRARY_PATH includes OpenRC library path
 
 ### 2. Service Dependency Handling
 Missing NixOS->OpenRC service translation layer. Current approach:
@@ -137,22 +140,12 @@ boot.initrd.openrc.extraConfig = "rc_cgroup_mode=\"unified\"";
 # Build OpenRC-enabled system
 nix-build -A config.system.build.isoImage -I nixpkgs=. nixos/release.nix
 
-# Inspect initrd contents
-nix-build -A config.system.build.initialRamdisk -I nixpkgs=.
-ls result/initrd | grep -E 'libeinfo|openrc'
-
 # Test in QEMU
 qemu-kvm -cdrom ./result/iso/nixos-*.iso -m 4096
 ```
 
-## Contribution Notes
-
-This fork demonstrates several non-standard patterns:
-1. **Path Remapping:** Overriding meson's prefix handling
-2. **Initrd Library Injection:** Manual library copying vs Nix auto-detection
-3. **Service Translation:** Ad-hoc conversion of NixOS services to OpenRC scripts
-
-Current priority: Fix Stage 1 library loading through:
-- LD_LIBRARY_PATH injection
-- patchelf adjustments
-- Initrd ldconfig execution
+## Current Status
+Successfully transitions from stage-1 to stage-2, but fails during OpenRC initialization due to library loading issues. Next steps:
+- Debug library loading in stage-2
+- Verify library paths and permissions
+- Check dynamic linker configuration

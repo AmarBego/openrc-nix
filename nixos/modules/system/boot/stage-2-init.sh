@@ -90,18 +90,28 @@ if [ "@USE_OPENRC@" = "1" ]; then
     export RC_SVCDIR=/run/openrc
     export RC_LIBEXECDIR=/lib/rc
 
+    # Add OpenRC library path to LD_LIBRARY_PATH
+    export LD_LIBRARY_PATH="@openrcPackage@/lib:$LD_LIBRARY_PATH"
+
     # Create required directories
     mkdir -p /run/openrc/started
     mkdir -p /run/openrc/{init.d,conf.d,runlevels}
+    mkdir -p /lib/rc
+
+    # Set up OpenRC libraries
+    echo "Setting up OpenRC libraries..."
+    @openrcLibSetup@
 
     # Copy runtime config if provided
     if [ -n "@openrcRuntimeConfig@" ]; then
+        echo "Installing runtime configuration..."
         cp "@openrcRuntimeConfig@" /run/openrc/rc.conf
         chmod 644 /run/openrc/rc.conf
     fi
 
     # Start OpenRC
-    exec "@openrcPackage@/sbin/openrc-init"
+    echo "Executing openrc-init..."
+    exec "@openrcPackage@/bin/openrc-init"
 else
     echo "Starting systemd..."
     exec "@systemdExecutable@"

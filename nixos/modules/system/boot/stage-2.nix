@@ -26,6 +26,25 @@ let
     rc_initdir="/run/openrc/init.d"
   '';
 
+  # Create OpenRC library setup script
+  openrcLibSetup = pkgs.writeScript "openrc-lib-setup" ''
+    #!${pkgs.bash}/bin/bash
+    mkdir -p /lib /run/ldconfig
+
+    # Copy OpenRC libraries
+    echo "Copying OpenRC libraries..."
+    for lib in ${openrcPkg}/lib/lib{einfo,rc}.so*; do
+      if [ -f "$lib" ]; then
+        cp -av "$lib" /lib/
+      fi
+    done
+
+    # Update library cache with custom temp directory
+    echo "Updating library cache..."
+    TMPDIR=/run/ldconfig ldconfig -C /run/ldconfig/ld.so.cache /lib
+    cp -av /run/ldconfig/ld.so.cache /etc/ld.so.cache
+  '';
+
   # Modified stage2 mount script
   stage2MountScript = pkgs.writeText "stage2-mount" ''
     specialMount() {
@@ -48,7 +67,7 @@ let
     specialMount "tmpfs" "/run" "nosuid,nodev,mode=0755" "tmpfs"
   '';
 
-    bootStage2 = pkgs.replaceVarsWith {
+  bootStage2 = pkgs.replaceVarsWith {
     src = ./stage-2-init.sh;
     isExecutable = true;
     replacements = {
@@ -58,12 +77,14 @@ let
       inherit (config.system.nixos) distroName;
       inherit useHostResolvConf;
       inherit stage2MountScript;
+      inherit openrcLibSetup;
 
       # Add OpenRC to path if enabled
       path = lib.makeBinPath (
         [
           pkgs.coreutils
           pkgs.util-linux
+          pkgs.glibc.bin  # For ldconfig
         ]
         ++ lib.optional useHostResolvConf pkgs.openresolv
         ++ lib.optional openrcEnabled openrcPkg
