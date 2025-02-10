@@ -1,0 +1,66 @@
+diff --git a/meson_options.txt b/meson_options.txt
+index 0d12345..1a23456 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -14,6 +14,8 @@ option('selinux', type : 'feature', value : 'auto',
+ option('shell', type : 'string', value : '/bin/sh',
+   description : 'Default posix compatible shell')
++option('rootprefix', type : 'string', value : '',
++  description : 'Root prefix directory (for NixOS compatibility)')
+ option('sysvinit', type : 'boolean', value : false,
+   description : 'enable SysVinit compatibility (linux only)')
+ option('zsh-completions', type : 'boolean',
+   description : 'install zsh completions')
+diff --git a/meson.build b/meson.build
+index 0d12345..1a23456 100644
+--- a/meson.build
++++ b/meson.build
+@@
+-option_pkg_prefix = get_option('pkg_prefix')
+-if option_pkg_prefix == ''
+-  if os == 'Dragonfly' or os == 'FreeBSD'
+-    pkg_prefix = '/usr/local'
+-  elif os == 'GNU' or os == 'GNU-kFreeBSD' or os == 'Linux'
+-    pkg_prefix = '/usr'
+-  elif os == 'NetBSD'
+-    pkg_prefix = '/usr/pkg'
+-  endif
+-else
+-  pkg_prefix = option_pkg_prefix
+-endif
+-
+-bindir = get_option('prefix') / get_option('bindir')
+-libdir = get_option('prefix') / get_option('libdir')
+-pluginsdir = libdir / 'rc/plugins'
+-libexecdir = get_option('prefix') / get_option('libexecdir')
+-rc_libexecdir = libexecdir / 'rc'
+-rc_bindir = rc_libexecdir / 'bin'
+-rc_sbindir = rc_libexecdir / 'sbin'
+-rc_shdir = rc_libexecdir / 'sh'
+-sbindir = get_option('prefix') / get_option('sbindir')
+-pamdir = get_option('sysconfdir') / 'pam.d'
++option_pkg_prefix = get_option('pkg_prefix')
++if option_pkg_prefix == ''
++  if os == 'Dragonfly' or os == 'FreeBSD'
++    pkg_prefix = '/usr/local'
++  elif os == 'GNU' or os == 'GNU-kFreeBSD' or os == 'Linux'
++    pkg_prefix = '/usr'
++  elif os == 'NetBSD'
++    pkg_prefix = '/usr/pkg'
++  endif
++else
++  pkg_prefix = option_pkg_prefix
++endif
++
++## NixOS path adjustments
++rootprefix = get_option('prefix')
++bindir = rootprefix / get_option('bindir')
++libdir = rootprefix / get_option('libdir')
++pluginsdir = libdir / 'rc/plugins'
++libexecdir = rootprefix / get_option('libexecdir')
++rc_libexecdir = libexecdir / 'rc'
++rc_bindir = rc_libexecdir / 'bin'
++rc_sbindir = rc_libexecdir / 'sbindir'
++rc_shdir = rc_libexecdir / 'sh'
++sbindir = rootprefix / get_option('sbindir')
++pamdir = get_option('sysconfdir') / 'pam.d'

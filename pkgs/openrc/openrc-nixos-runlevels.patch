@@ -1,0 +1,55 @@
+diff --git a/tools/meson_runlevels.sh b/tools/meson_runlevels.sh
+--- a/tools/meson_runlevels.sh
++++ b/tools/meson_runlevels.sh
+@@ -61,35 +61,35 @@ esac
+ if ! test -d "${DESTDIR}${sysinitdir}"; then
+ 	install -d "${DESTDIR}${sysinitdir}"
+ 	for x in ${sysinit}; do
+-		ln -snf "${init_d_dir}/$x" "${DESTDIR}${sysinitdir}/$x"
++		ln -snf "${DESTDIR}${init_d_dir}/$x" "${DESTDIR}${sysinitdir}/$x"
+ 	done
+ fi
+ 
+ if ! test -d "${DESTDIR}${bootdir}"; then
+ 	install -d "${DESTDIR}${bootdir}"
+ 	for x in ${boot}; do
+-		ln -snf "${init_d_dir}/$x" "${DESTDIR}${bootdir}/$x"
++		ln -snf "${DESTDIR}${init_d_dir}/$x" "${DESTDIR}${bootdir}/$x"
+ 	done
+ fi
+ 
+ if ! test -d "${DESTDIR}${defaultdir}"; then
+ 	install -d "${DESTDIR}${defaultdir}"
+ 	for x in ${default}; do
+-		ln -snf "${init_d_dir}/$x" "${DESTDIR}${defaultdir}/$x"
++		ln -snf "${DESTDIR}${init_d_dir}/$x" "${DESTDIR}${defaultdir}/$x"
+ 	done
+ fi
+ 
+ if ! test -d "${DESTDIR}${nonetworkdir}"; then
+ 	install -d "${DESTDIR}${nonetworkdir}"
+ 	for x in ${nonetwork}; do
+-		ln -snf "${init_d_dir}/$x" "${DESTDIR}${nonetworkdir}/$x"
++		ln -snf "${DESTDIR}${init_d_dir}/$x" "${DESTDIR}${nonetworkdir}/$x"
+ 	done
+ fi
+ 
+ if ! test -d "${DESTDIR}${shutdowndir}"; then
+ 	install -d "${DESTDIR}${shutdowndir}"
+ 	for x in ${shutdown}; do
+-		ln -snf "${init_d_dir}/$x" "${DESTDIR}${shutdowndir}/$x"
++		ln -snf "${DESTDIR}${init_d_dir}/$x" "${DESTDIR}${shutdowndir}/$x"
+ 	done
+ fi
+ 
+ if test "${sysvinit}" = yes && test "${os}" = Linux; then \
+ 	for x in tty1 tty2 tty3 tty4 tty5 tty6; do
+-		ln -snf "${init_d_dir}/agetty" "${DESTDIR}/${init_d_dir}/agetty.$x"
+-		ln -snf "${init_d_dir}/agetty.$x" "${DESTDIR}/${defaultdir}/agetty.$x"
++		ln -snf "${DESTDIR}${init_d_dir}/agetty" "${DESTDIR}${init_d_dir}/agetty.$x"
++		ln -snf "${DESTDIR}${init_d_dir}/agetty.$x" "${DESTDIR}${defaultdir}/agetty.$x"
+ 	done;
+ fi
+ 
+-ln -snf "${rc_libexecdir}"/sh/functions.sh "${DESTDIR}/${init_d_dir}"
++ln -snf "${DESTDIR}${rc_libexecdir}"/sh/functions.sh "${DESTDIR}${init_d_dir}"

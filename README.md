@@ -1,101 +1,158 @@
-<p align="center">
-  <a href="https://nixos.org">
-    <picture>
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/NixOS/nixos-homepage/main/public/logo/nixos-hires.png">
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NixOS/nixos-artwork/master/logo/nixos-white.png">
-      <img src="https://raw.githubusercontent.com/NixOS/nixos-homepage/main/public/logo/nixos-hires.png" width="500px" alt="NixOS logo">
-    </picture>
-  </a>
-</p>
 
-<p align="center">
-  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/github/contributors-anon/NixOS/nixpkgs" alt="Contributors badge" /></a>
-  <a href="https://opencollective.com/nixos"><img src="https://opencollective.com/nixos/tiers/supporter/badge.svg?label=supporters&color=brightgreen" alt="Open Collective supporters" /></a>
-</p>
+# NixOS OpenRC Experimental Fork
 
-[Nixpkgs](https://github.com/nixos/nixpkgs) is a collection of over
-100,000 software packages that can be installed with the
-[Nix](https://nixos.org/nix/) package manager. It also implements
-[NixOS](https://nixos.org/nixos/), a purely-functional Linux distribution.
+## Objective
+Implement OpenRC as alternative init system while maintaining NixOS principles. Key challenges:
+- Adapt OpenRC to read-only Nix store
+- Replace systemd's service management
+- Handle Nix-specific path requirements
 
-# Manuals
+## Technical Approach
 
-* [NixOS Manual](https://nixos.org/nixos/manual) - how to install, configure, and maintain a purely-functional Linux distribution
-* [Nixpkgs Manual](https://nixos.org/nixpkgs/manual/) - contributing to Nixpkgs and using programming-language-specific Nix expressions
-* [Nix Package Manager Manual](https://nixos.org/nix/manual) - how to write Nix expressions (programs), and how to use Nix command line tools
+### 1. OpenRC Package Modifications
+*(pkgs/openrc/default.nix)*
 
-# Community
+**Build System Adjustments:**
+- Added `rootprefix` meson option for NixOS paths
+- Patched meson.build to use `@rootprefix@` instead of hardcoded paths
+```meson
+# Before
+bindir = get_option('prefix') / get_option('bindir')
+# After
+bindir = rootprefix / get_option('bindir')
+```
 
-* [Discourse Forum](https://discourse.nixos.org/)
-* [Matrix Chat](https://matrix.to/#/#community:nixos.org)
-* [NixOS Weekly](https://weekly.nixos.org/)
-* [Official wiki](https://wiki.nixos.org/)
-* [Community-maintained list of ways to get in touch](https://wiki.nixos.org/wiki/Get_In_Touch#Chat) (Discord, Telegram, IRC, etc.)
+**Library Handling:**
+- Explicitly copy .so files during installPhase
+- Set RPATH in NIX_LDFLAGS:
+```nix
+NIX_LDFLAGS = "-rpath ${placeholder "out"}/lib";
+```
 
-# Other Project Repositories
+**Critical Patches:**
+- `openrc-nixos-paths.patch`: Rewrites hardcoded paths to NixOS equivalents
+- `openrc-nixos-runlevels.patch`: Fixes symlink creation with DESTDIR
 
-The sources of all official Nix-related projects are in the [NixOS
-organization on GitHub](https://github.com/NixOS/). Here are some of
-the main ones:
+### 2. NixOS Service Integration
+*(nixos/modules/services/openrc.nix)*
 
-* [Nix](https://github.com/NixOS/nix) - the purely functional package manager
-* [NixOps](https://github.com/NixOS/nixops) - the tool to remotely deploy NixOS machines
-* [nixos-hardware](https://github.com/NixOS/nixos-hardware) - NixOS profiles to optimize settings for different hardware
-* [Nix RFCs](https://github.com/NixOS/rfcs) - the formal process for making substantial changes to the community
-* [NixOS homepage](https://github.com/NixOS/nixos-homepage) - the [NixOS.org](https://nixos.org) website
-* [hydra](https://github.com/NixOS/hydra) - our continuous integration system
-* [NixOS Artwork](https://github.com/NixOS/nixos-artwork) - NixOS artwork
+**Service Aggregation:**
+```nix
+openrcServices = pkgs.runCommand "openrc-services" {
+  # Combines core services with user-defined ones
+  nativeBuildInputs = [ pkgs.rsync ];
+} ''
+  mkdir -p $out/etc/openrc/{init.d,conf.d}
+  # Merge package services and custom services
+  ${lib.concatStrings (lib.mapAttrsToList installService config.services.openrc.services)}
+'';
+```
 
-# Continuous Integration and Distribution
+**Activation Scripts:**
+- Creates runtime directories in /run/openrc
+- Symlinks store paths to expected locations:
+```bash
+ln -sfn ${openrcServices}/etc/openrc/init.d /etc/init.d
+```
 
-Nixpkgs and NixOS are built and tested by our continuous integration
-system, [Hydra](https://hydra.nixos.org/).
+### 3. Initramfs Integration
+*(nixos/modules/system/boot/openrc-init.nix)*
 
-* [Continuous package builds for unstable/master](https://hydra.nixos.org/jobset/nixos/trunk-combined)
-* [Continuous package builds for the NixOS 24.11 release](https://hydra.nixos.org/jobset/nixos/release-24.11)
-* [Tests for unstable/master](https://hydra.nixos.org/job/nixos/trunk-combined/tested#tabs-constituents)
-* [Tests for the NixOS 24.11 release](https://hydra.nixos.org/job/nixos/release-24.11/tested#tabs-constituents)
+**Initrd Setup:**
+- Copies OpenRC binaries and libraries to initrd:
+```nix
+copy_bin_and_libs ${config.boot.initrd.openrc.package}/bin/openrc-init
+```
+- Creates minimal runtime environment:
+```bash
+mkdir -p /run/openrc/{init.d,conf.d,runlevels,started}
+```
 
-Artifacts successfully built with Hydra are published to cache at
-https://cache.nixos.org/. When successful build and test criteria are
-met, the Nixpkgs expressions are distributed via [Nix
-channels](https://nix.dev/manual/nix/stable/command-ref/nix-channel.html).
+**Current Stage 1 Failure:**
+Library resolution fails despite:
+```nix
+# Explicit library copying in extraUtilsCommands
+for libfile in ${openrcPkg}/lib/libeinfo.so*; do
+  copy_bin_and_libs "$libfile"
+done
+```
+Error manifests as:
+```
+openrc-init: error while loading shared libraries: libeinfo.so.1: cannot open shared object file
+```
 
-# Contributing
+### 4. Stage 2 Initialization
+*(nixos/modules/system/boot/stage-2.nix)*
 
-Nixpkgs is among the most active projects on GitHub. While thousands
-of open issues and pull requests might seem a lot at first, it helps
-consider it in the context of the scope of the project. Nixpkgs
-describes how to build tens of thousands of pieces of software and implements a
-Linux distribution. The [GitHub Insights](https://github.com/NixOS/nixpkgs/pulse)
-page gives a sense of the project activity.
+**Environment Preparation:**
+- Sets up OpenRC-specific paths:
+```nix
+runtimeConfig = pkgs.writeText "openrc-runtime-config" ''
+  rc_basedir="/run/openrc"
+  rc_runleveldir="/run/openrc/runlevels"
+'';
+```
 
-Community contributions are always welcome through GitHub Issues and
-Pull Requests.
+**Init Switching:**
+```bash
+if [ "@USE_OPENRC@" = "1" ]; then
+  exec "@openrcPackage@/sbin/openrc-init"
+fi
+```
 
-For more information about contributing to the project, please visit
-the [contributing page](CONTRIBUTING.md).
+## Known Issues
 
-# Donations
+### 1. Stage 1 Library Resolution
+Despite explicit copying in `extraUtilsCommands`, initrd fails to find libeinfo.so.1. Debugging steps:
 
-The infrastructure for NixOS and related projects is maintained by a
-nonprofit organization, the [NixOS
-Foundation](https://nixos.org/nixos/foundation.html). To ensure the
-continuity and expansion of the NixOS infrastructure, we are looking
-for donations to our organization.
+- Verified library exists in initrd's /lib
+- Checked ELF dependencies:
+```bash
+ldd /nix/store/...-extra-utils/bin/openrc-init
+    libeinfo.so.1 => not found
+```
+- Suspected issue: initrd's ld cache not updated
 
-You can donate to the NixOS foundation through [SEPA bank
-transfers](https://nixos.org/donate.html) or by using Open Collective:
+### 2. Service Dependency Handling
+Missing NixOS->OpenRC service translation layer. Current approach:
+```nix
+services.openrc.services = {
+  network = {
+    script = "${pkgs.dhcpcd}/bin/dhcpcd";
+    runlevels = [ "default" ];
+  };
+};
+```
 
-<a href="https://opencollective.com/nixos#support"><img src="https://opencollective.com/nixos/tiers/supporter.svg?width=890" /></a>
+### 3. Cgroups Integration
+OpenRC's cgroup support requires patching for NixOS's cgroup v2 layout:
+```nix
+hardware.cgroup.enable = true;
+boot.initrd.openrc.extraConfig = "rc_cgroup_mode=\"unified\"";
+```
 
-# License
+## Building & Testing
 
-Nixpkgs is licensed under the [MIT License](COPYING).
+```bash
+# Build OpenRC-enabled system
+nix-build -A config.system.build.isoImage -I nixpkgs=. nixos/release.nix
 
-Note: MIT license does not apply to the packages built by Nixpkgs,
-merely to the files in this repository (the Nix expressions, build
-scripts, NixOS modules, etc.). It also might not apply to patches
-included in Nixpkgs, which may be derivative works of the packages to
-which they apply. The aforementioned artifacts are all covered by the
-licenses of the respective packages.
+# Inspect initrd contents
+nix-build -A config.system.build.initialRamdisk -I nixpkgs=.
+ls result/initrd | grep -E 'libeinfo|openrc'
+
+# Test in QEMU
+qemu-kvm -cdrom ./result/iso/nixos-*.iso -m 4096
+```
+
+## Contribution Notes
+
+This fork demonstrates several non-standard patterns:
+1. **Path Remapping:** Overriding meson's prefix handling
+2. **Initrd Library Injection:** Manual library copying vs Nix auto-detection
+3. **Service Translation:** Ad-hoc conversion of NixOS services to OpenRC scripts
+
+Current priority: Fix Stage 1 library loading through:
+- LD_LIBRARY_PATH injection
+- patchelf adjustments
+- Initrd ldconfig execution

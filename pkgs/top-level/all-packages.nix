@@ -736,6 +736,8 @@ with pkgs;
 
   serverspec = callPackage ../tools/misc/serverspec { };
 
+  openrc = callPackage ../openrc/default.nix {};
+
   setupSystemdUnits = callPackage ../build-support/setup-systemd-units.nix { };
 
   shortenPerlShebang = makeSetupHook {
