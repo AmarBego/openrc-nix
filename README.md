@@ -51,40 +51,67 @@ NIX_LDFLAGS = "-rpath ${placeholder "out"}/lib";
 **Service Aggregation:**
 ```nix
 openrcServices = pkgs.runCommand "openrc-services" {
-  # Combines core services with user-defined ones
   nativeBuildInputs = [ pkgs.rsync ];
 } ''
   mkdir -p $out/etc/openrc/{init.d,conf.d}
-  # Merge package services and custom services
-  ${lib.concatStrings (lib.mapAttrsToList installService config.services.openrc.services)}
+
+  # Link critical functions.sh from OpenRC package
+  ln -s ${config.boot.initrd.openrc.package}/libexec/rc/sh/functions.sh $out/etc/openrc/init.d/
+
+  # Merge core services with error handling
+  ${lib.concatStrings (lib.mapAttrsToList (name: cfg: ''
+    if [ -f ${cfg.script} ]; then
+      install -Dm755 ${cfg.script} $out/etc/openrc/init.d/${name}
+    else
+      echo "Warning: Service script ${cfg.script} not found" >&2
+    fi
+  '') config.services.openrc.services)}
 '';
 ```
 
 **Activation Scripts:**
-- Creates runtime directories in /run/openrc
-- Symlinks store paths to expected locations:
+- Creates runtime directories with proper permissions
+- Symlinks store paths with atomic updates
+- Integrates service management commands:
 ```bash
+# Create runtime directory structure
+mkdir -p /run/openrc/{softlevel,started,init.d,conf.d,runlevels}
+
+# Atomic symlinking of service definitions
 ln -sfn ${openrcServices}/etc/openrc/init.d /etc/init.d
+ln -sfn ${openrcServices}/etc/openrc/conf.d /etc/conf.d
+
+# Refresh service links
+${pkgs.openrc}/bin/rc-update -u
 ```
 
 ### 3. Stage 2 Initialization
 *(nixos/modules/system/boot/stage-2.nix)*
 
-**Library Setup:**
+**Robust Library Setup:**
 ```nix
 openrcLibSetup = pkgs.writeScript "openrc-lib-setup" ''
+  #!${pkgs.bash}/bin/bash
   mkdir -p /lib /run/ldconfig
 
-  # Copy OpenRC libraries
-  cp -av ${openrcPkg}/lib/lib{einfo,rc}.so* /lib/
+  # Validate and copy OpenRC libraries
+  echo "Copying OpenRC libraries..."
+  for lib in ${openrcPkg}/lib/lib{einfo,rc}.so*; do
+    if [ -f "$lib" ]; then
+      cp -av "$lib" /lib/
+    else
+      echo "Warning: Library $lib not found!" >&2
+    fi
+  done
 
-  # Update library cache with writable temp directory
-  TMPDIR=/run/ldconfig ldconfig -C /run/ldconfig/ld.so.cache /lib
+  # Generate library cache with verbose output
+  echo "Updating library cache..."
+  TMPDIR=/run/ldconfig ldconfig -v -C /run/ldconfig/ld.so.cache /lib
   cp -av /run/ldconfig/ld.so.cache /etc/ld.so.cache
 '';
 ```
 
-**Environment Preparation:**
+**Expanded Runtime Configuration:**
 ```nix
 runtimeConfig = pkgs.writeText "openrc-runtime-config" ''
   rc_sys=""
@@ -94,12 +121,27 @@ runtimeConfig = pkgs.writeText "openrc-runtime-config" ''
   rc_shell=/bin/sh
   rc_basedir="/run/openrc"
   rc_runleveldir="/run/openrc/runlevels"
+  rc_initdir="/run/openrc/init.d"
+  rc_confdir="/run/openrc/conf.d"
+  rc_parallel="YES"
 '';
 ```
 
-**Init Switching:**
+**Init Execution Flow:**
 ```bash
 if [ "@USE_OPENRC@" = "1" ]; then
+  # Configure OpenRC environment
+  export RC_SVCNAME=openrc RC_SVCDIR=/run/openrc
+  export LD_LIBRARY_PATH="@openrcPackage@/lib:$LD_LIBRARY_PATH"
+
+  # Prepare runtime directories
+  mkdir -p /run/openrc/started /lib/rc
+
+  # Execute library setup and configuration
+  @openrcLibSetup@
+  [ -n "@openrcRuntimeConfig@" ] && cp "@openrcRuntimeConfig@" /run/openrc/rc.conf
+
+  # Launch OpenRC init
   exec "@openrcPackage@/bin/openrc-init"
 fi
 ```
