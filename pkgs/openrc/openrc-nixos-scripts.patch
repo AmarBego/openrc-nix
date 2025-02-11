@@ -1,0 +1,23 @@
+diff --git a/init.d/bootmisc.in b/init.d/bootmisc.in
+--- a/init.d/bootmisc.in
++++ b/init.d/bootmisc.in
+@@ -11,8 +11,8 @@
+ 
+ depend()
+ {
+-	need localmount
+-	before logger
++	use localmount
++	before logger
+ 	after clock root sysctl
+ 	keyword -prefix -timeout
+ }
+@@ -182,7 +182,7 @@
+ 	done
+ 
+ 	if [ "$RC_UNAME" = Linux -a -d /run ]; then
+-		migrate_to_run	/var/lock /run/lock
++		migrate_to_run	/var/lock /run/openrc/lock
+ 		migrate_to_run	/var/run /run
+ 		clean_run
+ 	fi

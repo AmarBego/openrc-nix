@@ -1,4 +1,4 @@
-{ stdenv, lib, fetchFromGitHub, meson, ninja, pkg-config, audit, libcap, pam }:
+{ stdenv, lib, fetchFromGitHub, meson, ninja, pkg-config, audit, libcap, pam, coreutils, bash }:
 
 stdenv.mkDerivation rec {
   pname = "openrc";
@@ -14,7 +14,15 @@ stdenv.mkDerivation rec {
   patches = [
     ./openrc-nixos-paths.patch
     ./openrc-nixos-runlevels.patch
+    ./openrc-nixos-init.patch
+    ./openrc-nixos-scripts.patch
   ];
+
+  postPatch = ''
+  substituteInPlace src/openrc-init/openrc-init.c \
+    --replace "@PATH@" "${lib.makeBinPath [ coreutils bash ]}" \
+    --replace "@OPENRC@" "$out"
+  '';
 
   nativeBuildInputs = [ meson ninja pkg-config ];
   buildInputs = [ audit libcap pam ];

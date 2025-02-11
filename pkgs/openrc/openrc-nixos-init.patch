@@ -1,0 +1,22 @@
+diff --git a/src/openrc-init/openrc-init.c b/src/openrc-init/openrc-init.c
+--- a/src/openrc-init/openrc-init.c
++++ b/src/openrc-init/openrc-init.c
+@@ -42,7 +42,7 @@
+ #include "wtmp.h"
+ #include "version.h"
+ 
+-static const char *path_default = "/sbin:/usr/sbin:/bin:/usr/bin";
++static const char *path_default = "@PATH@";
+ static const char *rc_default_runlevel = "default";
+ 
+ static void do_openrc(const char *runlevel)
+@@ -63,7 +63,7 @@ static void do_openrc(const char *runlevel)
+			setsid();
+			/* unblock all signals */
+			sigprocmask(SIG_UNBLOCK, &all_signals, NULL);
+			printf("Starting %s runlevel\n", runlevel);
+-			execlp("openrc", "openrc", runlevel, NULL);
++			execlp("@OPENRC@/bin/openrc", "openrc", runlevel, NULL);
+			perror("exec");
+			exit(1);
+			break;
