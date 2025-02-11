@@ -66,65 +66,125 @@ stdenv.mkDerivation rec {
     find . -type f -name "rc" -o -name "openrc"
   '';
 
-  postInstall = ''
+   postInstall = ''
+    echo "=== Starting OpenRC Post-Install ==="
+
     # Create directory structure
-    mkdir -p $out/{bin,lib,libexec/rc/{bin,sh}}  # Added lib directory
-    mkdir -p $out/share/openrc/{init.d,conf.d,runlevels/{boot,sysinit,default,nonetwork,shutdown}}
+    mkdir -p $out/{bin,sbin,lib,libexec/rc/{bin,sh}}
 
     # Install OpenRC libraries with proper permissions and symlinks
-    for libname in libeinfo librc; do
-      # Find and install the versioned library
-      for libpath in build/src/lib"$libname"/lib"$libname".so*; do
-        if [ -f "$libpath" ]; then
-          echo "Installing library: $libpath"
-          install -Dm755 "$libpath" "$out/lib/$(basename $libpath)"
+    echo "=== Building and Installing Libraries ==="
 
-          # Create .so symlink if this is the .so.X version
-          if [[ "$libpath" =~ \.so\.[0-9]+$ ]]; then
-            ln -sf "$(basename $libpath)" "$out/lib/$libname.so"
-          fi
+    # First ensure the libraries are built
+    for libname in libeinfo librc; do
+      if [ -d "build/src/$libname" ]; then
+        echo "Building $libname..."
+        cd "build/src/$libname"
+        make
+        cd ../../..
+      else
+        echo "Warning: Source directory for $libname not found"
+        find . -name "$libname*"
+      fi
+    done
+
+    # Now install the libraries
+    for libname in libeinfo librc; do
+      # Try multiple possible locations
+      for searchdir in "build/src/$libname" "src/$libname" "lib/$libname"; do
+        if [ -d "$searchdir" ]; then
+          echo "Searching in $searchdir for $libname..."
+          find "$searchdir" -type f -name "*.so*" -print
+
+          for libfile in $(find "$searchdir" -type f -name "*.so*"); do
+            echo "Installing $libfile to $out/lib/"
+            install -Dm755 "$libfile" "$out/lib/$(basename $libfile)"
+
+            # Create .so symlink if this is the .so.X version
+            if [[ "$(basename $libfile)" =~ \.so\.[0-9]+$ ]]; then
+              base_libname=$(basename "$libfile" | sed 's/\.so\.[0-9]\+$//')
+              echo "Creating symlink $out/lib/$base_libname.so -> $(basename $libfile)"
+              ln -sf "$(basename $libfile)" "$out/lib/$base_libname.so"
+            fi
+          done
         fi
       done
     done
 
     # Verify library installation
     echo "=== Library Verification ==="
+    echo "Contents of $out/lib:"
     ls -la $out/lib/
-    for binary in $out/bin/*; do
-      echo "Checking dependencies for $(basename $binary):"
-      ldd "$binary" || true
+
+    # Test library loading
+    echo "Testing library loading:"
+    for lib in $out/lib/*.so*; do
+      echo "Testing $lib:"
+      LD_LIBRARY_PATH=$out/lib ldd "$lib" || true
     done
 
-    # First handle the rc binary specifically since it's special
-    for rcpath in build/src/rc/openrc build/src/rc/rc src/rc/openrc src/rc/rc; do
-      if [ -f "$rcpath" ]; then
-        install -Dm755 "$rcpath" "$out/bin/rc"
-        install -Dm755 "$rcpath" "$out/libexec/rc/bin/rc"
-        break
-      fi
+    echo "=== Installing OpenRC Binaries ==="
+
+    # Debug: Show source directory structure
+    echo "Source directory contents:"
+    ls -R
+
+    # Debug: Find all potential openrc binaries
+    echo "Searching for openrc binary:"
+    find . -type f -name "openrc" -o -name "rc"
+
+    # First install the core openrc binary since others link to it
+    found=0
+    for dir in build/src/rc src/rc build/rc build; do
+      for binary in openrc rc; do
+        if [ -f "$dir/$binary" ]; then
+          echo "Found core binary at $dir/$binary"
+          install -Dm755 "$dir/$binary" "$out/sbin/openrc"
+          install -Dm755 "$dir/$binary" "$out/bin/openrc"
+          found=1
+          break 2
+        fi
+      done
     done
 
-    # If rc still isn't installed, try to find it
-    if [ ! -f "$out/bin/rc" ]; then
-      echo "Searching for rc binary..."
-      if rcfile=$(find . -type f -name "openrc" -o -name "rc" | grep -E "/(rc|openrc)$" | head -n1); then
-        echo "Found rc at: $rcfile"
-        install -Dm755 "$rcfile" "$out/bin/rc"
-        install -Dm755 "$rcfile" "$out/libexec/rc/bin/rc"
-      else
-        echo "Error: Could not find rc binary"
-        exit 1
+    # Try searching in build directory if not found
+    if [ $found -eq 0 ]; then
+      echo "Searching build directory for openrc binary..."
+      if openrc_bin=$(find . -type f -name "openrc" | head -n1); then
+        if [ -n "$openrc_bin" ]; then
+          echo "Found openrc at: $openrc_bin"
+          install -Dm755 "$openrc_bin" "$out/sbin/openrc"
+          install -Dm755 "$openrc_bin" "$out/bin/openrc"
+          found=1
+        fi
       fi
     fi
 
-    # Copy binaries from build directory to final locations
-    for binary in openrc-init rc rc-service rc-status rc-update start-stop-daemon; do
-      # Try multiple possible locations with multiple possible names
+    # Verify core binary installation
+    if [ ! -f "$out/sbin/openrc" ]; then
+      echo "ERROR: Failed to install core openrc binary!"
+      echo "Current directory: $(pwd)"
+      echo "Directory contents:"
+      ls -la
+      echo "Build directory contents:"
+      ls -la build/ || true
+      echo "Build/src contents:"
+      ls -la build/src/ || true
+      exit 1
+    fi
+
+    # Now create openrc-run symlink
+    echo "Creating openrc-run symlink..."
+    ln -sf openrc "$out/sbin/openrc-run"
+    ln -sf openrc "$out/bin/openrc-run"
+
+    # Install other binaries
+    for binary in rc rc-service rc-status rc-update start-stop-daemon openrc-init; do
       found=0
-      for dir in . src/rc src/"$binary" bin sbin build/src/rc build/src/"$binary"; do
-        # Try both the binary name and openrc-$binary
+      for dir in build/src/rc src/rc build/src/"$binary" src/"$binary" bin sbin; do
         for name in "$binary" "openrc-$binary"; do
           if [ -f "$dir/$name" ]; then
+            echo "Installing $binary..."
             install -Dm755 "$dir/$name" "$out/bin/$binary"
             install -Dm755 "$dir/$name" "$out/libexec/rc/bin/$binary"
             found=1
@@ -140,18 +200,16 @@ stdenv.mkDerivation rec {
       fi
     done
 
-    # Special handling for rc binary
-    if [ ! -f "$out/bin/rc" ] && [ -f "build/src/rc/openrc" ]; then
-      install -Dm755 build/src/rc/openrc "$out/bin/rc"
-      install -Dm755 build/src/rc/openrc "$out/libexec/rc/bin/rc"
-    fi
-
     # Install support files
+    echo "=== Installing Support Files ==="
+
+    # Install shell functions
     if [ -f "sh/functions.sh" ]; then
       install -Dm644 sh/functions.sh $out/libexec/rc/sh/functions.sh
     fi
 
     # Copy init scripts and configs with error handling
+    echo "Installing init scripts and configs..."
     for dir in init.d conf.d etc/conf.d; do
       if [ -d "$dir" ]; then
         echo "Processing directory: $dir"
@@ -175,6 +233,7 @@ stdenv.mkDerivation rec {
     find $out/share/openrc/init.d -type f -exec chmod +x {} +
 
     # Create default configuration
+    echo "Creating default configuration..."
     cat > $out/share/openrc/rc.conf << EOF
     rc_sys=""
     rc_controller_cgroups="NO"
@@ -189,16 +248,43 @@ stdenv.mkDerivation rec {
     rc_confdir="/run/openrc/conf.d"
     EOF
 
-    # Add library check to debug output
+    echo "=== Final Verification ==="
+
+    # Verify binary installation
+    echo "Binary locations:"
+    echo "Contents of $out/sbin:"
+    ls -la $out/sbin/
+    echo "Contents of $out/bin:"
+    ls -la $out/bin/
+
+    # Test openrc-run symlink
+    if [ -L "$out/sbin/openrc-run" ]; then
+      echo "Verifying openrc-run symlink:"
+      ls -la "$out/sbin/openrc-run"
+      target=$(readlink "$out/sbin/openrc-run")
+      if [ -f "$out/sbin/$target" ]; then
+        echo "openrc-run symlink target exists"
+      else
+        echo "ERROR: openrc-run symlink target missing!"
+        exit 1
+      fi
+    else
+      echo "ERROR: openrc-run symlink missing!"
+      exit 1
+    fi
+
+    # Show final directory structure
     echo "=== Final Directory Structure ==="
     echo "bin directory:"
     ls -la $out/bin/
-    echo "lib directory:"  # Added lib directory listing
+    echo "lib directory:"
     ls -la $out/lib/
     echo "libexec/rc/bin directory:"
     ls -la $out/libexec/rc/bin/
     echo "share/openrc directory:"
     ls -la $out/share/openrc/
+
+    echo "=== OpenRC Post-Install Complete ==="
   '';
 
   # Add runtime library path

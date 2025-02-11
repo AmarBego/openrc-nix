@@ -83,35 +83,19 @@ exec {logOutFd}>&- {logErrFd}>&-
 
 # Start init system
 if [ "@USE_OPENRC@" = "1" ]; then
-    echo "Starting OpenRC..."
+    echo "Setting up OpenRC..."
 
-    # Set up OpenRC environment
-    export RC_SVCNAME=openrc
-    export RC_SVCDIR=/run/openrc
-    export RC_LIBEXECDIR=/lib/rc
+    # First set up libraries
+    source @openrcLibSetup@
 
-    # Add OpenRC library path to LD_LIBRARY_PATH
-    export LD_LIBRARY_PATH="@openrcPackage@/lib:$LD_LIBRARY_PATH"
+    # Then set up runtime environment
+    source @openrcRuntimeSetup@
 
-    # Create required directories
-    mkdir -p /run/openrc/started
-    mkdir -p /run/openrc/{init.d,conf.d,runlevels}
-    mkdir -p /lib/rc
+    echo "Installing runtime configuration..."
+    cp -f @openrcRuntimeConfig@ /etc/rc.conf
 
-    # Set up OpenRC libraries
-    echo "Setting up OpenRC libraries..."
-    @openrcLibSetup@
-
-    # Copy runtime config if provided
-    if [ -n "@openrcRuntimeConfig@" ]; then
-        echo "Installing runtime configuration..."
-        cp "@openrcRuntimeConfig@" /run/openrc/rc.conf
-        chmod 644 /run/openrc/rc.conf
-    fi
-
-    # Start OpenRC
     echo "Executing openrc-init..."
-    exec "@openrcPackage@/bin/openrc-init"
+    exec @openrcPackage@/bin/openrc-init
 else
     echo "Starting systemd..."
     exec "@systemdExecutable@"

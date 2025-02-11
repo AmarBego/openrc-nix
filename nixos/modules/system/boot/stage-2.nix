@@ -22,26 +22,53 @@ let
     rc_logger="YES"
     rc_shell=/bin/sh
     rc_basedir="/run/openrc"
-    rc_runleveldir="/run/openrc/runlevels"
     rc_initdir="/run/openrc/init.d"
+    rc_runleveldir="/run/openrc/runlevels"
+    rc_confdir="/run/openrc/conf.d"
   '';
 
   # Create OpenRC library setup script
   openrcLibSetup = pkgs.writeScript "openrc-lib-setup" ''
     #!${pkgs.bash}/bin/bash
+    set -x  # Enable debug output
+
+    echo "Setting up OpenRC libraries..."
+
+    # Create required directories
     mkdir -p /lib /run/ldconfig
 
-    # Copy OpenRC libraries
+    echo "OpenRC package path: ${openrcPkg}"
+    echo "Contents of OpenRC lib directory:"
+    ls -la ${openrcPkg}/lib/
+
+    # Copy all OpenRC libraries
     echo "Copying OpenRC libraries..."
     for lib in ${openrcPkg}/lib/lib{einfo,rc}.so*; do
       if [ -f "$lib" ]; then
+        echo "Copying $lib to /lib/"
         cp -av "$lib" /lib/
+      else
+        echo "Warning: Library $lib not found!"
       fi
     done
 
-    # Update library cache with custom temp directory
+    # Verify copied libraries
+    echo "Verifying copied libraries:"
+    ls -la /lib/lib{einfo,rc}.so*
+
+    # Update library cache
     echo "Updating library cache..."
-    TMPDIR=/run/ldconfig ldconfig -C /run/ldconfig/ld.so.cache /lib
+    mkdir -p /run/ldconfig
+    TMPDIR=/run/ldconfig ldconfig -v -C /run/ldconfig/ld.so.cache /lib
+
+    # Test library loading
+    echo "Testing library loading:"
+    for lib in /lib/lib{einfo,rc}.so*; do
+      echo "Testing $lib:"
+      ldd "$lib" || true
+    done
+
+    # Copy cache to final location
     cp -av /run/ldconfig/ld.so.cache /etc/ld.so.cache
   '';
 
@@ -67,6 +94,47 @@ let
     specialMount "tmpfs" "/run" "nosuid,nodev,mode=0755" "tmpfs"
   '';
 
+        openrcRuntimeSetup = pkgs.writeScript "openrc-runtime-setup" ''
+    #!${pkgs.bash}/bin/bash
+    set -x
+
+    # Essential environment setup
+    export PATH=${openrcPkg}/bin:$PATH
+    export LD_LIBRARY_PATH=${openrcPkg}/lib:$LD_LIBRARY_PATH
+
+    # Create runtime directories under /run
+    mkdir -p /run/openrc/{init.d,conf.d,runlevels/{boot,default,nonetwork,shutdown,sysinit},rc/{init.d,sh}}
+
+    # Link shell functions to runtime location
+    ln -sf ${openrcPkg}/libexec/rc/sh/functions.sh /run/openrc/rc/sh/
+
+    # Create init script symlinks in runtime directory
+    for script in ${openrcPkg}/share/openrc/init.d/*; do
+      if [ -f "$script" ]; then
+        ln -sf "$script" "/run/openrc/init.d/$(basename $script)"
+      fi
+    done
+
+    # Set up essential runlevels
+    declare -A runlevel_services
+    runlevel_services[sysinit]="devfs procfs sysfs dmesg"
+    runlevel_services[boot]="localmount hostname modules bootmisc root fsck"
+
+    for level in ''${!runlevel_services[@]}; do
+      for svc in ''${runlevel_services[$level]}; do
+        if [ -f "/run/openrc/init.d/$svc" ]; then
+          mkdir -p "/run/openrc/runlevels/$level"
+          ln -sf "/run/openrc/init.d/$svc" "/run/openrc/runlevels/$level/$svc"
+        fi
+      done
+    done
+
+    # Create compatibility symlinks
+    ln -sf /run/openrc/init.d /run/init.d
+    ln -sf /run/openrc/runlevels /run/runlevels
+    ln -sf /run/openrc/rc /run/rc
+  '';
+
   bootStage2 = pkgs.replaceVarsWith {
     src = ./stage-2-init.sh;
     isExecutable = true;
@@ -78,6 +146,7 @@ let
       inherit useHostResolvConf;
       inherit stage2MountScript;
       inherit openrcLibSetup;
+      inherit openrcRuntimeSetup;
 
       # Add OpenRC to path if enabled
       path = lib.makeBinPath (
@@ -85,6 +154,7 @@ let
           pkgs.coreutils
           pkgs.util-linux
           pkgs.glibc.bin  # For ldconfig
+          pkgs.findutils
         ]
         ++ lib.optional useHostResolvConf pkgs.openresolv
         ++ lib.optional openrcEnabled openrcPkg
@@ -147,24 +217,6 @@ in {
   config = {
     system.build = {
       bootStage2 = bootStage2;
-    };
-
-    # Add OpenRC setup if enabled
-    system.activationScripts = mkIf openrcEnabled {
-      openrc = {
-        deps = [];
-        text = ''
-          # Create OpenRC runtime directories
-          mkdir -p /run/openrc/{init.d,conf.d,runlevels,started}
-
-          # Create essential OpenRC directories
-          mkdir -p /etc/runlevels
-          mkdir -p /etc/init.d
-          mkdir -p /etc/conf.d
-          mkdir -p /lib/rc/init.d
-          mkdir -p /lib/rc/sh
-        '';
-      };
     };
   };
 }
