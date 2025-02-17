@@ -1,4 +1,4 @@
-# NixOS OpenRC Integration - Technical Documentation
+# NixOS OpenRC Experimental Fork
 
 ## Module Architecture
 
