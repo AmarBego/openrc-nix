@@ -1,168 +1,273 @@
-# NixOS OpenRC Experimental Fork
+# NixOS OpenRC Integration - Technical Documentation
 
-## Objective
-Implement OpenRC as alternative init system while maintaining NixOS principles. Key challenges:
-- Adapt OpenRC to read-only Nix store
-- Replace systemd's service management
-- Handle Nix-specific path requirements
+## Module Architecture
 
-## Current Progress
-- [x] OpenRC package builds successfully with NixOS paths
-- [x] Stage-1 boot completes successfully
-- [x] Transition to Stage-2 works
-- [x] Runtime directories created correctly
-- [x] OpenRC libraries copied to /lib
-- [x] Library cache updated in writable location
-- [x] Runtime configuration installed
-- [x] OpenRC init starts successfully
-- [~] Service management working (partial functionality)
-- [ ] System shutdown/reboot handling
-- [ ] Complete systemd replacement
-
-## Technical Approach
-
-### 1. OpenRC Source Patches
-*(pkgs/openrc)*
-
-**openrc-nixos-paths.patch:**
-- Adds `rootprefix` meson option for NixOS store path separation
-- Restructures directory definitions to use rootprefix:
-```bash
-# Before
-bindir = get_option('prefix') / get_option('bindir')
-# After
-rootprefix = get_option('prefix')
-bindir = rootprefix / get_option('bindir')
-```
-- Enables proper path separation between build-time and runtime paths
-
-**openrc-nixos-runlevels.patch:**
-- Fixes runlevel symlink creation with DESTDIR
-- Ensures correct path resolution during installation:
-```bash
-# Before
-ln -snf "${init_d_dir}/$x" "${DESTDIR}${sysinitdir}/$x"
-# After
-ln -snf "${DESTDIR}${init_d_dir}/$x" "${DESTDIR}${sysinitdir}/$x"
-```
-- Critical for NixOS to maintain store path integrity
-- Prevents broken symlinks in final package
-
-**openrc-nixos-init.patch:**
-- Replaces hardcoded paths with NixOS store references
-- Fixes binary execution paths for NixOS FHS:
-```c
-// Before
-execlp("openrc", "openrc", runlevel, NULL);
-// After
-execlp("@OPENRC@/bin/openrc", "openrc", runlevel, NULL);
+```text
+nixos/
+├── modules/
+│   ├── services/
+│   │   └── openrc/
+│   │       ├── default.nix         # Main service
+│   │       ├── library-setup.nix  # Library
+│   │       ├── runtime.nix        # Runtime config
+│   │       ├── runtime-setup.nix  # Runtime env
+│   │       └── service-aggregation.nix # Service
+│   └── system/
+│       └── boot/
+│           └── openrc-init.nix    # Core boot
 ```
 
-**openrc-nixos-scripts.patch:**
-- Adapts init scripts for NixOS directory structure
-- Updates lock file locations and service dependencies:
-```bash
-# Changed lock path
--migrate_to_run /var/lock /run/lock
-+migrate_to_run /var/lock /run/openrc/lock
+### Key Technical Challenges
 
-# Fixed service dependency
+1. **Read-Only Store Compatibility**
+   - Problem: OpenRC expects writable /etc/init.d
+   - Solution: Symlink farm in /run/openrc with Nix store backing
+   - Relevant Files: `service-aggregation.nix`, `runtime-setup.nix`
+
+2. **Service Management**
+   - Problem: systemd-style declarative services → OpenRC scripts
+   - Solution: Nix-generated init scripts with dependency resolution
+   - Relevant Files: `default.nix` (services.openrc options)
+
+3. **Library Paths**
+   - Problem: OpenRC binaries expect libraries in /lib
+   - Solution: Copy libraries to /lib at runtime + ldconfig in writable store
+   - Relevant Files: `library-setup.nix`
+
+## Core Components
+
+### 1. Runtime Environment (runtime-setup.nix)
+```bash
+# Creates writable OpenRC structure
+mkdir -p /run/openrc/{init.d,conf.d,rc/sh,rc/bin}
+
+# Critical environment variables
+export RC_LIBEXECDIR=/run/openrc/rc
+export PATH="${openrcPkg}/bin:${coreutils}/bin:$PATH"
+
+# Init script patching
+sed -i "1s|#!/bin/sh|#!${bash}/bin/bash|" "$target"
+```
+
+### 2. Service Aggregation (service-aggregation.nix)
+```nix
+# Aggregates services from Nix store
+rsync -a ${openrcPkg}/etc/openrc/init.d/ $out/etc/openrc/init.d/
+
+# User-defined services
+install -Dm755 ${cfg.script} $out/etc/openrc/init.d/${name}
+```
+
+### 3. Library Initialization (library-setup.nix)
+```bash
+# Library copy from Nix store to /lib
+cp -av ${package}/lib/lib{einfo,rc}.so* /lib/
+
+# Writable ld.so.cache generation
+TMPDIR=/run/ldconfig ldconfig -C /run/ldconfig/ld.so.cache
+```
+
+## Known Issues & Workarounds
+
+### 1. Missing rc/sh Scripts
+```text
+* openrc: unable to exec `/nix/store/.../libexec/rc/sh/init.sh`: No such file or directory
+* gendepends.sh: No such file or directory
+```
+
+**Root Cause:**
+OpenRC hardcodes paths to its libexec scripts. The Nix build puts these in the store path, but OpenRC's init process looks for them in runtime paths.
+
+**Workarounds:**
+1. Add explicit symlinks in service aggregation:
+```nix
+# service-aggregation.nix
+ln -s ${openrcPkg}/libexec/rc/sh/init.sh $out/etc/openrc/init.d/
+ln -s ${openrcPkg}/libexec/rc/sh/gendepends.sh $out/etc/openrc/init.d/
+```
+
+2. Patch OpenRC source to use runtime paths:
+```diff
+# openrc-nixos-init.patch
+- rc_confdir = "/libexec/rc";
++ rc_confdir = "/run/openrc/rc";
+```
+
+3. Add to runtime-setup.nix:
+```bash
+# Copy critical RC scripts to runtime directory
+cp -v ${openrcPkg}/libexec/rc/sh/*.sh /run/openrc/rc/sh/
+chmod 755 /run/openrc/rc/sh/*
+```
+
+### 2. Library Path Resolution
+```text
+ERROR: libeinfo.so.1: cannot open shared object file
+```
+
+**Workaround:**
+Add explicit library cache regeneration step:
+```nix
+# library-setup.nix
+echo "Force-regenerating library cache..."
+LD_LIBRARY_PATH=/lib /run/current-system/sw/bin/ldconfig
+```
+
+### 3. Partial Boot Sequence
+```text
+Starting default runlevel... [hangs]
+```
+
+# NixOS OpenRC Integration - Technical Documentation
+
+## Source Patches Overview
+*(pkgs/openrc/)*
+
+### 1. Path Structure Patch (`openrc-nixos-paths.patch`)
+```diff
+diff --git a/meson.build b/meson.build
++rootprefix = get_option('prefix')
+-bindir = get_option('prefix') / get_option('bindir')
++bindir = rootprefix / get_option('bindir')
+```
+**Purpose:** Separates build-time paths from runtime paths using `rootprefix`
+**Impact:** Enables Nix store path isolation while maintaining FHS compatibility
+
+### 2. Runlevel Symlink Patch (`openrc-nixos-runlevels.patch`)
+```diff
+diff --git a/tools/meson_runlevels.sh b/tools/meson_runlevels.sh
+-ln -snf "${init_d_dir}/$x" "${DESTDIR}${sysinitdir}/$x"
++ln -snf "${DESTDIR}${init_d_dir}/$x" "${DESTDIR}${sysinitdir}/$x"
+```
+**Purpose:** Fixes symlink creation with DESTDIR during installation
+**Why Needed:** Prevents broken symlinks in final Nix package
+
+### 3. Init Process Patch (`openrc-nixos-init.patch`)
+```diff
+diff --git a/src/openrc-init/openrc-init.c b/src/openrc-init/openrc-init.c
+-execlp("openrc", "openrc", runlevel, NULL);
++execlp("@OPENRC@/bin/openrc", "openrc", runlevel, NULL);
+```
+**Purpose:** Hardcodes Nix store path for init process
+**Critical For:** Stage 2 initialization reliability
+
+### 4. Script Compatibility Patch (`openrc-nixos-scripts.patch`)
+```diff
+diff --git a/init.d/bootmisc.in b/init.d/bootmisc.in
 -need localmount
 +use localmount
+-migrate_to_run /var/lock /run/lock
++migrate_to_run /var/lock /run/openrc/lock
 ```
+**Purpose:** Adapts service scripts for NixOS directory structure
+**Key Change:** Lock file relocation prevents conflicts
 
-### 2. Dedicated Initialization Module
-*(nixos/modules/system/boot/openrc-init.nix)*
+## Package Build Configuration
+*(pkgs/openrc/default.nix)*
 
-**Key Components:**
-1. Runtime Configuration Generation:
+### Core Build Parameters
 ```nix
-runtimeConfig = pkgs.writeText "openrc-runtime-config" ''
-  rc_basedir="/run/openrc"
-  rc_runleveldir="/run/openrc/runlevels"
-  rc_initdir="/run/openrc/init.d"
+mesonFlags = [
+  "-Drootprefix=${placeholder "out"}"
+  "--localstatedir=/run/openrc"
+  "-Dselinux=disabled"
+  "-Dnewnet=false"
+];
+```
+
+### Critical Build Steps
+1. **Path Substitution:**
+```nix
+substituteInPlace src/openrc-init/openrc-init.c \
+  --replace "@PATH@" "${lib.makeBinPath [ coreutils bash ]}" \
+  --replace "@OPENRC@" "$out"
+```
+
+2. **Library Installation:**
+```bash
+# Install OpenRC libraries with versioned symlinks
+install -Dm755 "$libfile" "$out/lib/$(basename $libfile)"
+ln -sf "$(basename $libfile)" "$out/lib/$base_libname.so"
+```
+
+3. **Runtime Directory Setup:**
+```nix
+postInstall = ''
+  mkdir -p $out/{bin,sbin,lib,libexec/rc/{bin,sh}}
+  install -Dm644 sh/functions.sh $out/libexec/rc/sh/functions.sh
 '';
 ```
 
-2. Library Setup Script:
-- Copies OpenRC libraries to `/lib`
-- Generates ld.so.cache in writable storage
-- Verifies library loading through debug checks
+## Debugging Patch Effects
 
-3. Runtime Environment Builder:
+### Verify Applied Patches
 ```bash
-openrcRuntimeSetup = pkgs.writeScript "openrc-runtime-setup" ''
-  # Create NixOS-compatible directory structure
-  mkdir -p /run/openrc/{init.d,conf.d,rc/sh}
+nix-store --query --references $(which openrc) | grep openrc
+nix-shell -p patchelf --run "patchelf --print-rpath ${pkgs.openrc}/lib/lib*"
+```
 
-  # Set up core environment variables
-  export PATH=${openrcPkg}/bin:${pkgs.coreutils}/bin:$PATH
-  export LD_LIBRARY_PATH=${openrcPkg}/lib:$LD_LIBRARY_PATH
+### Test Symlink Resolution
+```bash
+# In NixOS VM:
+ls -l /run/openrc/init.d/functions.sh
+readlink /etc/init.d/functions.sh
+```
 
-  # Install patched init scripts
-  for script in ${openrcPkg}/share/openrc/init.d/*; do
-    cp "$script" /run/openrc/init.d/
-    sed -i "1s|#!/bin/sh|#!${pkgs.bash}/bin/bash|" "$target"
-  done
+### Patch Development Workflow
+1. Modify patch files in `pkgs/openrc/`
+2. Rebuild with debug symbols:
+```bash
+nix-build -E 'with import <nixpkgs> {}; openrc.overrideAttrs (o: {
+  NIX_CFLAGS_COMPILE = "-O0 -g";
+  patches = [ ./patches/new-patch.patch ];
+})'
+```
+
+## Critical Path Analysis
+
+### Patch Dependency Chain
+1. `openrc-nixos-paths.patch` → Meson configuration
+2. `openrc-nixos-runlevels.patch` → Runlevel setup
+3. `openrc-nixos-init.patch` → Init process execution
+4. `openrc-nixos-scripts.patch` → Service compatibility
+
+### Build Artifact Validation
+```bash
+# Verify library presence
+ls -l ${pkgs.openrc}/lib/lib{einfo,rc}.so*
+
+# Check init script paths
+grep -r '/run/openrc' ${pkgs.openrc}/share/openrc/init.d/
+```
+
+## Integration Points
+
+### NixOS Overrides
+```nix
+# In system configuration
+boot.initrd.systemd.enable = false;
+boot.initrd.openrc.enable = true;
+services.openrc.enable = true;
+```
+
+### Activation Hooks
+```nix
+# default.nix
+system.activationScripts.openrc = ''
+  ${openrcPkg}/bin/rc-update -u
 '';
 ```
 
-**Critical Functionality:**
-- Creates writable OpenRC structure in `/run/openrc`
-- Maintains compatibility symlinks to `/etc`
-- Implements NixOS-specific runlevel definitions:
-```bash
-runlevel_services = {
-  sysinit = ["devfs" "procfs" "sysfs" "dmesg"];
-  boot = ["localmount" "hostname" "modules" "bootmisc"];
-  default = ["local"];
-};
-```
+## Contributor Access Points
 
-### 3. Stage 2 Integration
-*(nixos/modules/system/boot/stage-2.nix)*
+1. **Service Dependency Resolution**
+   - File: `service-aggregation.nix`
+   - Key Function: Service ordering in runlevels
 
-**Changes:**
-- Moved OpenRC initialization logic to dedicated module
-- Added environment variables for NixOS paths:
-```bash
-export USE_OPENRC="1"
-export openrcPackage="@openrcPackage@"
-```
-- Maintains compatibility with existing activation scripts
+2. **Init Script Compatibility**
+   - File: `runtime-setup.nix`
+   - Key Function: Script patching logic
 
-## Known Issues
-
-### 1. Init Script Paths
-Missing critical infrastructure scripts:
-```bash
-ERROR: cannot find /nix/store/...-openrc-0.52/libexec/rc/init.sh
-ERROR: cannot find gendepends.sh in path
-```
-Proposed solution:
-```bash
-hardware.firmware = [ pkgs.openrc ];
-environment.pathsToLink = ["/libexec/rc"];
-```
-
-### 2. Libexec Structure
-OpenRC expects specific libexec layout:
-```bash
-# Temporary workaround in openrc-init.nix
-ln -sf ${openrcPkg}/libexec/rc /run/openrc/rc
-```
-
-### 3. Service Dependency Generation
-Missing gendepends.sh location:
-```bash
-boot.initrd.openrc.extraBin = {
-  gendepends = "${pkgs.openrc}/libexec/rc/gendepends.sh";
-};
-```
-
-## Current Status
-OpenRC now successfully initializes and enters runlevels, but service startup is blocked by missing infrastructure scripts. Next steps:
-- Fix libexec directory structure
-- Resolve gendepends.sh path issues
-- Finalize service dependency resolution
-- Implement proper shutdown handling
+3. **Boot Process Integration**
+   - File: `system/boot/openrc-init.nix`
+   - Key Function: Stage 2 initialization
