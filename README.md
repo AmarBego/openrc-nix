@@ -118,8 +118,6 @@ LD_LIBRARY_PATH=/lib /run/current-system/sw/bin/ldconfig
 Starting default runlevel... [hangs]
 ```
 
-# NixOS OpenRC Integration - Technical Documentation
-
 ## Source Patches Overview
 *(pkgs/openrc/)*
 
