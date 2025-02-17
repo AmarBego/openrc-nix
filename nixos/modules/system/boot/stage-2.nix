@@ -44,31 +44,27 @@ let
     isExecutable = true;
     replacements = {
       shell = "${pkgs.bash}/bin/bash";
-      systemConfig = null; # replaced in ../activation/top-level.nix
-      inherit (config.boot) readOnlyNixStore systemdExecutable;
-      inherit (config.system.nixos) distroName;
-      inherit useHostResolvConf;
-      inherit stage2MountScript;
-      inherit openrcLibSetup;
-      inherit openrcRuntimeSetup;
+      systemConfig = null;
+      readOnlyNixStore = config.boot.readOnlyNixStore;
+      systemdExecutable = config.boot.systemdExecutable;
+      distroName = config.system.nixos.distroName;
+      useHostResolvConf = useHostResolvConf;
+      stage2MountScript = stage2MountScript;
 
-      # Add OpenRC to path if enabled
-      path = lib.makeBinPath (
-        [
-          pkgs.coreutils
-          pkgs.util-linux
-          pkgs.glibc.bin  # For ldconfig
-          pkgs.findutils
-        ]
-        ++ lib.optional useHostResolvConf pkgs.openresolv
-        ++ lib.optional openrcEnabled openrcPkg
-      );
-
-      # Export OpenRC environment variable and config
+      # Add OpenRC substitutions
       USE_OPENRC = if openrcEnabled then "1" else "";
-      openrcPackage = if openrcEnabled then openrcPkg else null;
-      # Add the runtime config
-      openrcRuntimeConfig = if openrcEnabled then openrcConfig else null;
+      openrcLibSetup = toString openrcLibSetup;
+      openrcRuntimeSetup = toString openrcRuntimeSetup;
+      openrcRuntimeConfig = toString openrcConfig;
+      openrcPackage = if openrcEnabled then "${openrcPkg}" else "";
+
+      path = lib.makeBinPath ([
+        pkgs.coreutils
+        pkgs.util-linux
+        pkgs.glibc.bin
+        pkgs.findutils
+      ] ++ lib.optional useHostResolvConf pkgs.openresolv
+        ++ lib.optional openrcEnabled openrcPkg);
 
       postBootCommands = pkgs.writeText "local-cmds" ''
         ${config.boot.postBootCommands}
